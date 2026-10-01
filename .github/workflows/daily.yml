@@ -1,9 +1,10 @@
 name: daily-forward-test
 
-# Read-only forward test: refresh forecasts and CLI observations, snapshot EMOS
-# fair values against live Kalshi quotes right after each zone's 10:00 LST
-# decision time, archive the GEFS/ECMWF ensemble, score settled events, and
-# commit the compact results under live/. No orders are ever placed here.
+# Read-only forward test: apply the frozen EMOS parameters in models/ (refit
+# locally with `weather-edge fit`) to the day's fixed-lead forecasts, snapshot fair
+# values against live Kalshi quotes right after each zone's 10:00 LST decision
+# time, archive the GEFS/ECMWF ensemble, score settled events, and commit the
+# compact results under live/. No orders are ever placed here.
 
 on:
   schedule:
@@ -21,7 +22,7 @@ concurrency:
 jobs:
   forward-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -34,15 +35,6 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install -e .
-
-      # Raw forecast/observation history is gitignored; cache it between runs so
-      # each run only fetches the last few days.
-      - name: Restore raw data cache
-        uses: actions/cache@v4
-        with:
-          path: data/raw
-          key: raw-${{ github.run_id }}
-          restore-keys: raw-
 
       - name: Run tests
         run: pytest -q

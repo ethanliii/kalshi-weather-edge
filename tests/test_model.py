@@ -151,3 +151,12 @@ def test_walk_forward_lead2_excludes_unfinished_day():
     preds2 = walk_forward(corrupted, ["m1", "m2"], min_train_days=200, lead=2)
     same = preds["date"] == month_start
     np.testing.assert_allclose(preds.loc[same, "mu"], preds2.loc[same, "mu"])
+
+
+def test_emos_round_trips_through_json():
+    import json
+
+    df = synthetic(seed=4)
+    model = GaussianEMOS(["m1", "m2"]).fit(df.iloc[:600])
+    clone = GaussianEMOS.from_dict(json.loads(json.dumps(model.to_dict())))
+    np.testing.assert_allclose(clone.predict(df.iloc[600:]), model.predict(df.iloc[600:]))

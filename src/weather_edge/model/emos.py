@@ -47,6 +47,17 @@ class GaussianEMOS:
     params_: np.ndarray | None = field(default=None, repr=False)
     train_crps_: float | None = None
 
+    # --- persistence ----------------------------------------------------------
+    def to_dict(self) -> dict:
+        if self.params_ is None:
+            raise RuntimeError("model is not fitted")
+        return {"members": self.members, "params": [float(x) for x in self.params_],
+                "train_crps": self.train_crps_}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> GaussianEMOS:
+        return cls(list(d["members"]), np.asarray(d["params"], dtype=float), d.get("train_crps"))
+
     # --- design ---------------------------------------------------------------
     def _design(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         x = df[self.members].to_numpy(dtype=float)
