@@ -83,6 +83,50 @@ def market_comparison(br: pd.DataFrame) -> tuple[dict, list[dict]]:
     return out, rows
 
 
+ABLATION_SERIES = ["KXHIGHAUS", "KXHIGHCHI", "KXHIGHMIA", "KXHIGHNY"]
+
+
+def fresh_run_ablation(lead: int) -> dict:
+    """Does fresher model information close the gap to the market?
+
+    On identical rows (4 long-history cities, dates with a decision-day ECMWF run),
+    compare EMOS on the five fixed-lead models with EMOS that also sees the 00Z
+    ECMWF HRES run of the decision day. Both are walk-forward, same spec.
+    """
+    base = dataset.emos_predictions(lead, ABLATION_SERIES, fresh_table=True)
+    fresh = dataset.emos_predictions(lead, ABLATION_SERIES, fresh_table=True,
+                                     members=[*dataset.MEMBERS, dataset.FRESH_MEMBER])
+    out: dict = {"series": ABLATION_SERIES}
+    for name, preds in (("base", base), ("fresh", fresh)):
+        p = preds.dropna(subset=["obs"])
+        crps = crps_normal(p["mu"].to_numpy(), p["sigma"].to_numpy(), p["obs"].to_numpy(float))
+        out[f"crps_{name}"] = _est(cluster_bootstrap(crps, p["date"].to_numpy()))
+        out[f"mae_{name}"] = round(float(np.abs(p["obs"] - p["mu"]).mean()), 4)
+    bb = dataset.bracket_table(lead, base)
+    bf = dataset.bracket_table(lead, fresh)
+    bb = bb[bb["series"].isin(ABLATION_SERIES)]
+    bf = bf[bf["series"].isin(ABLATION_SERIES)]
+    merged = bf.merge(bb[["ticker", "p_emos"]].rename(columns={"p_emos": "p_base"}), on="ticker")
+    scores = {c: event_scores(merged, c) for c in ("p_base", "p_emos", "p_market")}
+    dates = scores["p_emos"]["date"].to_numpy()
+    out["n_events"] = int(len(scores["p_emos"]))
+    for metric in ("brier", "log_loss"):
+        out[metric] = {
+            "base": _est(cluster_bootstrap(scores["p_base"][metric].to_numpy(), dates)),
+            "fresh": _est(cluster_bootstrap(scores["p_emos"][metric].to_numpy(), dates)),
+            "market": _est(cluster_bootstrap(scores["p_market"][metric].to_numpy(), dates)),
+            "fresh_minus_base": _est(cluster_bootstrap(
+                scores["p_emos"][metric].to_numpy() - scores["p_base"][metric].to_numpy(), dates)),
+            "fresh_minus_market": _est(cluster_bootstrap(
+                scores["p_emos"][metric].to_numpy() - scores["p_market"][metric].to_numpy(),
+                dates)),
+        }
+    trades = simulate(merged, BacktestConfig())
+    summary = summarise(trades, BacktestConfig.contracts)
+    out["backtest_margin_0.03"] = None if summary is None else asdict(summary)
+    return out
+
+
 def settlement_check() -> dict:
     """How often Kalshi's settled value equals the NWS CLI high, by settlement source."""
     from weather_edge.collect import RAW_DIR
@@ -137,7 +181,8 @@ def run(leads: tuple[int, ...] = LEADS) -> dict:
                 if not trades.empty:
                     trades.to_csv(REPORTS_DIR / f"trades_lead{lead}.csv", index=False)
         results["leads"][str(lead)] = {"forecast_skill": skill, "vs_market": comp,
-                                       "backtest": backtests}
+                                       "backtest": backtests,
+                                       "fresh_run_ablation": fresh_run_ablation(lead)}
 
     plots.reliability(cal_frames, FIGURES_DIR / "reliability.png")
     plots.score_intervals(pd.DataFrame(score_rows), FIGURES_DIR / "scores.png")
