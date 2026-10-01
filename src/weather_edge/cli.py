@@ -65,6 +65,35 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
               f"market {ll['p_market']['mean']:.3f} | diff {ll['emos_minus_market']}")
 
 
+def cmd_paper(args: argparse.Namespace) -> None:
+    """Paper trade on the Kalshi DEMO exchange (never production)."""
+    import time
+
+    from weather_edge.config import LOG_DIR
+    from weather_edge.trading.demo_client import DemoClient, MissingCredentials
+    from weather_edge.trading.paper import PaperTrader
+    from weather_edge.trading.risk import KillSwitch, KillSwitchConfig, Ledger
+    from weather_edge.trading.sizing import SizingConfig
+
+    state = LOG_DIR / "paper"
+    ledger = Ledger(state / "ledger.jsonl")
+    kill = KillSwitch(state, KillSwitchConfig(max_daily_loss=args.max_daily_loss), ledger)
+    sizing = SizingConfig(kelly_fraction=args.kelly, min_edge=args.margin,
+                          max_market_exposure=args.max_market,
+                          max_event_exposure=args.max_event, max_total_exposure=args.max_total)
+    try:
+        client = DemoClient()
+    except MissingCredentials as exc:
+        raise SystemExit(f"paper trading needs demo API keys: {exc}") from None
+    trader = PaperTrader(client, ledger, kill, sizing, series=args.series)
+    while True:
+        orders = trader.run_once()
+        print(f"{len(orders)} orders sent; ledger: {ledger.path}")
+        if not args.loop or kill.tripped:
+            break
+        time.sleep(args.interval)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="weather-edge")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -82,6 +111,18 @@ def build_parser() -> argparse.ArgumentParser:
     e = sub.add_parser("evaluate", help="fit models out of sample and write reports/")
     e.add_argument("--leads", nargs="*", type=int, default=[1, 2])
     e.set_defaults(func=cmd_evaluate)
+
+    pt = sub.add_parser("paper", help="paper trade on the Kalshi DEMO exchange")
+    pt.add_argument("--series", nargs="*", help="series tickers (default: all)")
+    pt.add_argument("--margin", type=float, default=0.03, help="edge required after fees ($)")
+    pt.add_argument("--kelly", type=float, default=0.25, help="fraction of full Kelly")
+    pt.add_argument("--max-market", type=float, default=25.0, help="$ at risk per market")
+    pt.add_argument("--max-event", type=float, default=50.0, help="$ at risk per event")
+    pt.add_argument("--max-total", type=float, default=250.0, help="$ at risk in total")
+    pt.add_argument("--max-daily-loss", type=float, default=100.0, help="kill-switch loss limit")
+    pt.add_argument("--loop", action="store_true", help="keep running every --interval s")
+    pt.add_argument("--interval", type=int, default=900)
+    pt.set_defaults(func=cmd_paper)
     return p
 
 
