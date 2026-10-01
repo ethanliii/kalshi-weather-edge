@@ -34,11 +34,11 @@ ENSEMBLE_MODELS = ("gfs025", "ecmwf_ifs025")
 HISTORY_START = date(2024, 3, 1)
 
 
-def _get(url: str, params: dict, session: requests.Session | None = None, retries: int = 5) -> dict:
+def _get(url: str, params: dict, session: requests.Session | None = None, retries: int = 4) -> dict:
     s = session or requests
     for attempt in range(retries):
         try:
-            r = s.get(url, params=params, timeout=120)
+            r = s.get(url, params=params, timeout=60)
         except requests.RequestException as exc:
             log.warning("open-meteo network error: %s", exc)
             time.sleep(2**attempt)

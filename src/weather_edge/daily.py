@@ -109,9 +109,6 @@ def run() -> None:
     (LIVE_DIR / "snapshots").mkdir(exist_ok=True)
     (LIVE_DIR / "ensemble").mkdir(exist_ok=True)
     stations = list(STATIONS.values())
-    for st in stations:
-        collect.collect_cli(st)
-        collect.collect_forecasts(st)
     client = KalshiClient()
     now = datetime.now(UTC)
     snap = snapshot(client, FairValueService(), now)
