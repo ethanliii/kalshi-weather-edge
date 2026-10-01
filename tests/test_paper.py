@@ -128,6 +128,34 @@ def test_kill_switch_errors_reset_on_success(tmp_path, monkeypatch):
     assert ks.tripped
 
 
+def test_error_count_survives_restarts(tmp_path, monkeypatch):
+    monkeypatch.delenv("WEATHER_EDGE_KILL", raising=False)
+    cfg = KillSwitchConfig(max_consecutive_errors=3)
+    for _ in range(3):  # a fresh process per failure, as under cron
+        assert not KillSwitch(tmp_path, cfg).tripped
+        KillSwitch(tmp_path, cfg).record_error(RuntimeError("boom"))
+    assert KillSwitch(tmp_path, cfg).tripped
+
+
+def test_trader_api_error_is_counted(tmp_path, monkeypatch):
+    monkeypatch.delenv("WEATHER_EDGE_KILL", raising=False)
+    ex = FakeExchange()
+    ex.balance = lambda: (_ for _ in ()).throw(RuntimeError("503"))
+    t, ledger = trader(tmp_path, ex)
+    with pytest.raises(RuntimeError):
+        t.run_once()
+    assert t.kill.consecutive_errors == 1 and ledger.records("error")
+
+
+def test_trader_ignores_events_after_decision_window(tmp_path, monkeypatch):
+    monkeypatch.delenv("WEATHER_EDGE_KILL", raising=False)
+    ex = FakeExchange()
+    t, _ = trader(tmp_path, ex)
+    t.now = lambda: datetime(2026, 10, 2, 21, 0, tzinfo=UTC)  # 16:00 EST: high already observed
+    t.run_once()
+    assert ex.orders == []
+
+
 def test_manual_kill(tmp_path, monkeypatch):
     monkeypatch.delenv("WEATHER_EDGE_KILL", raising=False)
     ks = KillSwitch(tmp_path)
@@ -139,7 +167,7 @@ def test_manual_kill(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------------------ trader loop
-NOW = datetime(2026, 10, 2, 18, 0, tzinfo=UTC)  # 13:00 EST in NYC: lead-1 decision passed
+NOW = datetime(2026, 10, 2, 16, 0, tzinfo=UTC)  # 11:00 EST in NYC: inside the lead-1 window
 EVENT = "KXHIGHNY-26OCT02"
 BRACKETS = [Bracket(f"{EVENT}-T81", -math.inf, 80), Bracket(f"{EVENT}-B81.5", 81, 82),
             Bracket(f"{EVENT}-T82", 83, math.inf)]
@@ -244,6 +272,10 @@ def test_lead_for_respects_decision_time():
     assert lead_for(ny, date(2026, 10, 2), datetime(2026, 10, 2, 15, 0, tzinfo=UTC)) == 1
     assert lead_for(ny, date(2026, 10, 3), datetime(2026, 10, 2, 15, 0, tzinfo=UTC)) == 2
     assert lead_for(ny, date(2026, 10, 5), datetime(2026, 10, 2, 15, 0, tzinfo=UTC)) is None
+    # The window closes two hours after the decision time.
+    assert lead_for(ny, date(2026, 10, 2), datetime(2026, 10, 2, 16, 59, tzinfo=UTC)) == 1
+    assert lead_for(ny, date(2026, 10, 2), datetime(2026, 10, 2, 17, 0, tzinfo=UTC)) is None
+    assert lead_for(ny, date(2026, 10, 2), datetime(2026, 10, 3, 4, 59, tzinfo=UTC)) is None
 
 
 def test_daily_snapshot_only_inside_window(monkeypatch):

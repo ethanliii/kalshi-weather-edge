@@ -137,3 +137,17 @@ def test_walk_forward_is_out_of_sample():
     preds2 = walk_forward(corrupted, ["m1", "m2"], min_train_days=200)
     before = preds["date"] < "2025-03-01"
     np.testing.assert_allclose(preds.loc[before, "mu"], preds2.loc[before, "mu"])
+
+
+def test_walk_forward_lead2_excludes_unfinished_day():
+    df = synthetic(n=500, seed=3)
+    preds = walk_forward(df, ["m1", "m2"], min_train_days=200, lead=2)
+    first = preds.groupby("train_end")["date"].min()
+    # Training ends two days before the first prediction: D-1 isn't final at a D-1 decision.
+    assert ((pd.to_datetime(first.values) - first.index) == pd.Timedelta(days=1)).all()
+    corrupted = df.copy()
+    month_start = pd.Timestamp("2025-03-01")
+    corrupted.loc[corrupted["date"] == month_start - pd.Timedelta(days=1), "obs"] += 500
+    preds2 = walk_forward(corrupted, ["m1", "m2"], min_train_days=200, lead=2)
+    same = preds["date"] == month_start
+    np.testing.assert_allclose(preds.loc[same, "mu"], preds2.loc[same, "mu"])

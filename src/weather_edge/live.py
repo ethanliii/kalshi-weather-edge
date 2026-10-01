@@ -1,8 +1,10 @@
 """Live fair values for open markets.
 
 For an event on day D the lead is chosen so live inputs match training inputs:
-  * D == today (LST)    -> lead 1, valid once 10:00 LST has passed
-  * D == tomorrow (LST) -> lead 2, valid once 10:00 LST today has passed
+  * D == today (LST)    -> lead 1, from 10:00 LST for DECISION_WINDOW
+  * D == tomorrow (LST) -> lead 2, from 10:00 LST today for DECISION_WINDOW
+Outside that window nothing is priced: later in the day the market has seen
+observations the forecast hasn't, and the backtest never evaluated those trades.
 EMOS is refit on all history available at run time (same specification as the
 walk-forward evaluation), then applied to the fixed-lead forecast for D.
 """
@@ -24,6 +26,7 @@ from weather_edge.weather import openmeteo
 from weather_edge.weather.daywindow import decision_time
 
 log = logging.getLogger(__name__)
+DECISION_WINDOW = timedelta(hours=2)
 
 
 def lst_today(station: Station, now: datetime | None = None) -> date:
@@ -31,13 +34,17 @@ def lst_today(station: Station, now: datetime | None = None) -> date:
     return (now + timedelta(hours=station.std_utc_offset_h)).date()
 
 
-def lead_for(station: Station, day: date, now: datetime | None = None) -> int | None:
-    """Lead whose decision time has passed for `day`, or None if not tradeable by our rules."""
+def lead_for(
+    station: Station, day: date, now: datetime | None = None,
+    window: timedelta = DECISION_WINDOW,
+) -> int | None:
+    """Lead for `day` if `now` is inside [decision time, decision time + window), else None."""
     now = now or datetime.now(UTC)
     lead = (day - lst_today(station, now)).days + 1
     if lead not in (1, 2):
         return None
-    return lead if now >= decision_time(day, station.std_utc_offset_h, lead) else None
+    start = decision_time(day, station.std_utc_offset_h, lead)
+    return lead if start <= now < start + window else None
 
 
 @dataclass

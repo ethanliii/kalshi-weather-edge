@@ -96,8 +96,13 @@ def cmd_paper(args: argparse.Namespace) -> None:
         raise SystemExit(f"paper trading needs demo API keys: {exc}") from None
     trader = PaperTrader(client, ledger, kill, sizing, series=args.series)
     while True:
-        orders = trader.run_once()
-        print(f"{len(orders)} orders sent; ledger: {ledger.path}")
+        try:
+            orders = trader.run_once()
+            print(f"{len(orders)} orders sent; ledger: {ledger.path}")
+        except Exception as exc:  # already counted by the kill switch and logged to the ledger
+            logging.getLogger(__name__).error("run failed: %s", exc)
+            if not args.loop:
+                raise SystemExit(1) from exc
         if not args.loop or kill.tripped:
             break
         time.sleep(args.interval)
