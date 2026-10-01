@@ -65,6 +65,13 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
               f"market {ll['p_market']['mean']:.3f} | diff {ll['emos_minus_market']}")
 
 
+def cmd_daily(args: argparse.Namespace) -> None:
+    """Forward test: refresh weather, snapshot fair values vs live quotes, score settled."""
+    from weather_edge import daily
+
+    daily.run()
+
+
 def cmd_paper(args: argparse.Namespace) -> None:
     """Paper trade on the Kalshi DEMO exchange (never production)."""
     import time
@@ -111,6 +118,9 @@ def build_parser() -> argparse.ArgumentParser:
     e = sub.add_parser("evaluate", help="fit models out of sample and write reports/")
     e.add_argument("--leads", nargs="*", type=int, default=[1, 2])
     e.set_defaults(func=cmd_evaluate)
+
+    d = sub.add_parser("daily", help="forward-test snapshot (read-only; used by CI)")
+    d.set_defaults(func=cmd_daily)
 
     pt = sub.add_parser("paper", help="paper trade on the Kalshi DEMO exchange")
     pt.add_argument("--series", nargs="*", help="series tickers (default: all)")

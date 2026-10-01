@@ -245,3 +245,19 @@ def test_lead_for_respects_decision_time():
     assert lead_for(ny, date(2026, 10, 3), datetime(2026, 10, 2, 15, 0, tzinfo=UTC)) == 2
     assert lead_for(ny, date(2026, 10, 5), datetime(2026, 10, 2, 15, 0, tzinfo=UTC)) is None
 
+
+def test_daily_snapshot_only_inside_window(monkeypatch):
+    from weather_edge import daily
+
+    class Client:
+        def open_markets(self, s):
+            if s != "KXHIGHNY":
+                return []
+            return [{"event_ticker": EVENT, "ticker": b.ticker, "yes_bid_dollars": "0.30",
+                     "yes_ask_dollars": "0.32"} for b in BRACKETS]
+
+    # 10:00 EST decision = 15:00Z. 16:00Z is inside the 2h window, 18:00Z is not.
+    inside = daily.snapshot(Client(), FakeFV(), datetime(2026, 10, 2, 16, 0, tzinfo=UTC))
+    late = daily.snapshot(Client(), FakeFV(), datetime(2026, 10, 2, 18, 0, tzinfo=UTC))
+    assert len(inside) == 3 and inside["p_market"].sum() == pytest.approx(1, abs=1e-3)
+    assert late.empty

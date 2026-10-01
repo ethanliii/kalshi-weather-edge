@@ -1,0 +1,64 @@
+name: daily-forward-test
+
+# Read-only forward test: refresh forecasts and CLI observations, snapshot EMOS
+# fair values against live Kalshi quotes right after each zone's 10:00 LST
+# decision time, archive the GEFS/ECMWF ensemble, score settled events, and
+# commit the compact results under live/. No orders are ever placed here.
+
+on:
+  schedule:
+    # 10:00 local standard time is 15Z (ET), 16Z (CT), 17Z (MT/AZ), 18Z (PT).
+    - cron: "20 15,16,17,18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-forward-test
+  cancel-in-progress: false
+
+jobs:
+  forward-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install -r requirements.txt
+          pip install -e .
+
+      # Raw forecast/observation history is gitignored; cache it between runs so
+      # each run only fetches the last few days.
+      - name: Restore raw data cache
+        uses: actions/cache@v4
+        with:
+          path: data/raw
+          key: raw-${{ github.run_id }}
+          restore-keys: raw-
+
+      - name: Run tests
+        run: pytest -q
+
+      - name: Forward-test snapshot
+        run: weather-edge daily
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add live/
+          if git diff --cached --quiet; then
+            echo "No new results"
+          else
+            git commit -m "Forward test: $(date -u +%Y-%m-%dT%H:%MZ)"
+            git pull --rebase origin main
+            git push
+          fi
