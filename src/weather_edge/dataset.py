@@ -59,7 +59,7 @@ def emos_predictions(
     frames = []
     for s in series or sorted(STATIONS):
         df = forecast_table(s, lead, fresh=fresh_table)
-        preds = walk_forward(df, members or MEMBERS)
+        preds = walk_forward(df, members or MEMBERS, lead=lead)
         frames.append(preds)
         log.info("EMOS %s lead %d: %d out-of-sample days", s, lead, len(preds))
     out = pd.concat(frames, ignore_index=True)
@@ -77,9 +77,19 @@ def market_implied(bid: np.ndarray, ask: np.ndarray) -> np.ndarray:
     return mid / mid.sum()
 
 
+MAX_QUOTE_AGE = pd.Timedelta(hours=3)
+
+
 def _event_ok(g: pd.DataFrame) -> bool:
-    """Usable event: complete partition, one winner, a two-sided quote on every bracket."""
+    """Usable event: complete partition, one winner, a fresh two-sided quote on every bracket.
+
+    Kalshi omits candle periods with no activity, so the last candle before the
+    decision can be old; quotes older than MAX_QUOTE_AGE are treated as unknown.
+    """
     if g["yes_bid"].isna().any() or g["yes_ask"].isna().any():
+        return False
+    age = pd.to_datetime(g["decision_time"]) - pd.to_datetime(g["candle_end"])
+    if (age > MAX_QUOTE_AGE).any():
         return False
     if (g["yes_ask"] <= g["yes_bid"]).any() or (g["yes_ask"] > 1).any():
         return False

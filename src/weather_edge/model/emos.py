@@ -98,12 +98,14 @@ def walk_forward(
     min_train_days: int = 180,
     refit: str = "MS",
     y_col: str = "obs",
+    lead: int = 1,
 ) -> pd.DataFrame:
     """Out-of-sample EMOS predictions with an expanding window, refit monthly.
 
-    For each month, the model is fitted only on rows dated strictly before the
-    month's first day, so every prediction is genuinely out of sample.
-    `df` must hold one station and one lead: columns date, members..., y_col.
+    For each month, the model is fitted only on observations that were final at
+    the first decision of the month. A lead-L decision for day D happens at 10:00
+    LST on D-(L-1), when the latest final CLI is for D-L, so training uses dates
+    before start - (L-1) days. `df` holds one station and one lead.
     """
     df = df.sort_values("date").reset_index(drop=True)
     dates = pd.to_datetime(df["date"])
@@ -112,12 +114,13 @@ def walk_forward(
     boundaries = [*month_starts, dates.max() + pd.Timedelta(days=1)]
     out = []
     for start, end in zip(boundaries[:-1], boundaries[1:], strict=True):
-        train = df[(dates < start) & df[y_col].notna()]
+        cutoff = start - pd.Timedelta(days=lead - 1)
+        train = df[(dates < cutoff) & df[y_col].notna()]
         test = df[(dates >= start) & (dates < end)]
         if test.empty or len(train) < min_train_days * 0.8:
             continue
         model = GaussianEMOS(members).fit(train, y_col)
         test = test.dropna(subset=members)
         mu, sigma = model.predict(test)
-        out.append(test.assign(mu=mu, sigma=sigma, train_end=start))
+        out.append(test.assign(mu=mu, sigma=sigma, train_end=cutoff))
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()

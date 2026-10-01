@@ -24,6 +24,8 @@ def event(ev, d, probs, winner, bids=None, asks=None):
         "lo": lo, "hi": hi, "p": probs, "y": [int(i == winner) for i in range(n)],
         "result": ["yes" if i == winner else "no" for i in range(n)],
         "yes_bid": bids or [0.0] * n, "yes_ask": asks or [0.01] * n,
+        "decision_time": pd.Timestamp("2026-01-01T15:00", tz="UTC"),
+        "candle_end": pd.Timestamp("2026-01-01T15:00", tz="UTC"),
     })
 
 
@@ -78,6 +80,9 @@ def test_event_filter():
     assert not _event_ok(good.assign(yes_ask=[0.2, 0.5, None]))  # missing quote
     assert not _event_ok(good.assign(result=["yes", "yes", "no"]))  # two winners
     assert not _event_ok(good.assign(yes_bid=0.0, yes_ask=0.01))  # mids sum far below 1
+    stale = good.copy()
+    stale.loc[0, "candle_end"] = pd.Timestamp("2025-12-31T15:00", tz="UTC")  # day-old quote
+    assert not _event_ok(stale)
 
 
 def test_backtest_pnl_accounting():

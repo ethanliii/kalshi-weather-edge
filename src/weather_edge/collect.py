@@ -85,7 +85,9 @@ def collect_fresh_runs(station: Station, start: date = FRESH_START) -> pd.DataFr
     """Decision-day 00Z ECMWF HRES highs (ablation input). Rows: date, lead, model, tmax_f."""
     path = _path("fresh", station.series)
     old = _read(path)
-    have = set() if old is None else set(old["run_day"])
+    # A run day is done only when both leads have a value; partial/failed days are retried.
+    have = set() if old is None else set(
+        old.groupby("run_day")["tmax_f"].apply(lambda x: x.notna().all()).loc[lambda x: x].index)
     end = datetime.now(UTC).date()
     todo = [start + timedelta(days=i) for i in range((end - start).days + 1)]
     todo = [d for d in todo if d not in have]
@@ -95,6 +97,7 @@ def collect_fresh_runs(station: Station, start: date = FRESH_START) -> pd.DataFr
     def save() -> pd.DataFrame:
         df = pd.DataFrame(rows) if old is None else pd.concat([old, pd.DataFrame(rows)])
         if not df.empty:
+            df = df.drop_duplicates(["run_day", "lead"], keep="last")
             df.to_parquet(path, index=False)
         return df
 

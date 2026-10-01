@@ -7,7 +7,7 @@ Writes compact, committed results under live/:
   live/forward_scores.csv         per-event scores once events settle
 
 The job runs hourly from 15:20 to 18:20 UTC (10:00 LST is 15Z in the East, 18Z on
-the West Coast). An event is snapshotted only within SNAPSHOT_WINDOW after its
+the West Coast). An event is snapshotted only within live.DECISION_WINDOW after its
 decision time, so the forward test sees the same information set as the
 backtest instead of a late-day market that already knows the observed high.
 No orders are placed here; paper trading is a separate, demo-only command.
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
@@ -30,11 +30,9 @@ from weather_edge.kalshi.client import KalshiClient
 from weather_edge.kalshi.markets import event_date
 from weather_edge.live import FairValueService, lead_for
 from weather_edge.stations import STATIONS
-from weather_edge.weather.daywindow import decision_time
 
 log = logging.getLogger(__name__)
 LIVE_DIR = ROOT / "live"
-SNAPSHOT_WINDOW = timedelta(hours=2)
 
 
 def snapshot(client: KalshiClient, fv: FairValueService, now: datetime | None = None
@@ -49,8 +47,6 @@ def snapshot(client: KalshiClient, fv: FairValueService, now: datetime | None = 
             day = event_date(ev)
             lead = lead_for(station, day, now)
             if lead is None:
-                continue
-            if now - decision_time(day, station.std_utc_offset_h, lead) > SNAPSHOT_WINDOW:
                 continue
             try:
                 f = fv.fair_value(station, ev, day, lead, markets)
