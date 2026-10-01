@@ -1,0 +1,12 @@
+# Runtime
+cryptography==50.0.2
+matplotlib==3.11.2
+numpy==2.5.3
+pandas==3.0.6
+pyarrow==25.0.1
+python-dotenv==1.2.4
+requests==2.34.2
+scipy==1.18.1
+# Dev
+pytest==9.1.1
+ruff==0.16.10
