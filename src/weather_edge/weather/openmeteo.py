@@ -25,6 +25,7 @@ from weather_edge.weather.daywindow import cli_window_utc
 log = logging.getLogger(__name__)
 
 PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
+SINGLE_RUNS_URL = "https://single-runs-api.open-meteo.com/v1/forecast"
 ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 
 # Models with lead-1 and lead-2 archives from 2024-03 onward (probed 2026-10-01).
@@ -114,6 +115,35 @@ def fetch_previous_runs(
     df = pd.concat(frames, ignore_index=True)
     df["date"] = pd.to_datetime(df["date"]).dt.date
     return df
+
+
+def fetch_decision_day_run(
+    station: Station,
+    run_day: date,
+    model: str = "ecmwf_ifs",
+    session: requests.Session | None = None,
+) -> dict[int, float]:
+    """CLI-day max from the 00Z run of `run_day`, for lead 1 (D = run_day) and lead 2 (D + 1).
+
+    Unlike the fixed-lead Previous Runs fields, this is one specific run, published
+    by ~06-08Z — before the 10:00 LST decision time (15-18Z) in every US zone — so
+    it is the freshest model information a trader could actually have used.
+    ECMWF IFS HRES single runs are archived from 2024-03-14.
+    """
+    params = {
+        "latitude": station.lat,
+        "longitude": station.lon,
+        "hourly": "temperature_2m",
+        "models": model,
+        "run": f"{run_day.isoformat()}T00:00",
+        "forecast_days": 3,
+        "temperature_unit": "fahrenheit",
+        "timezone": "GMT",
+    }
+    hourly = hourly_frame(_get(SINGLE_RUNS_URL, params, session))["temperature_2m"]
+    days = [run_day, run_day + timedelta(days=1)]
+    daily = cli_daily_max(hourly, station, days)
+    return {1: float(daily[days[0]]), 2: float(daily[days[1]])}
 
 
 def parse_ensemble_column(col: str) -> tuple[str, int]:

@@ -73,3 +73,29 @@ def test_daily_max_requires_full_coverage():
 def test_parse_ensemble_column():
     assert parse_ensemble_column("temperature_2m_member07_ncep_gefs025") == ("ncep_gefs025", 7)
     assert parse_ensemble_column("temperature_2m_ecmwf_ifs025_ensemble") == ("ecmwf_ifs025_ensemble", 0)
+
+
+def test_decision_day_run_assigns_days_to_leads():
+    from weather_edge.weather import openmeteo
+
+    run_day = date(2026, 7, 4)
+    idx = pd.date_range("2026-07-04T00:00", periods=72, freq="h", tz="UTC")
+    vals = np.full(72, 70.0)
+    d1_start, _ = cli_window_utc(run_day, NYC.std_utc_offset_h)
+    d2_start, _ = cli_window_utc(run_day + timedelta(days=1), NYC.std_utc_offset_h)
+    vals[idx.get_loc(d1_start + timedelta(hours=15))] = 88.0  # day-1 peak
+    vals[idx.get_loc(d2_start + timedelta(hours=15))] = 91.0  # day-2 peak
+
+    class Session:
+        def get(self, url, params=None, timeout=None):
+            assert params["run"] == "2026-07-04T00:00" and url == openmeteo.SINGLE_RUNS_URL
+
+            class R:
+                status_code = 200
+
+                def json(self):
+                    return {"hourly": {"time": [t.strftime("%Y-%m-%dT%H:%M") for t in idx],
+                                       "temperature_2m": vals.tolist()}}
+            return R()
+
+    assert openmeteo.fetch_decision_day_run(NYC, run_day, session=Session()) == {1: 88.0, 2: 91.0}

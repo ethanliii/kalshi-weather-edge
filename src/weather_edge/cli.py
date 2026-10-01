@@ -49,6 +49,8 @@ def cmd_collect(args: argparse.Namespace) -> None:
             collect.collect_markets(client, st)
         if "quotes" in what:
             collect.collect_quotes(client, st)
+        if "fresh" in what:
+            collect.collect_fresh_runs(st)
     if "ensemble" in what:
         collect.collect_ensemble_snapshot(stations)
 
@@ -111,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     m.set_defaults(func=cmd_markets)
 
     c = sub.add_parser("collect", help="fetch and cache raw data")
-    c.add_argument("what", nargs="+", choices=["weather", "markets", "quotes", "ensemble"])
+    c.add_argument("what", nargs="+", choices=["weather", "markets", "quotes", "ensemble", "fresh"])
     c.add_argument("--series", nargs="*", help="series tickers (default: all)")
     c.set_defaults(func=cmd_collect)
 

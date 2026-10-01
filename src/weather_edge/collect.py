@@ -13,6 +13,7 @@ re-running only fetches what is missing. Layout:
 from __future__ import annotations
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -74,6 +75,44 @@ def collect_forecasts(station: Station, start: date = openmeteo.HISTORY_START) -
     df = df.sort_values(["date", "lead", "model"]).reset_index(drop=True)
     df.to_parquet(path, index=False)
     log.info("forecasts %s: %d rows through %s", station.series, len(df), df["date"].max())
+    return df
+
+
+FRESH_START = date(2024, 3, 15)
+
+
+def collect_fresh_runs(station: Station, start: date = FRESH_START) -> pd.DataFrame:
+    """Decision-day 00Z ECMWF HRES highs (ablation input). Rows: date, lead, model, tmax_f."""
+    path = _path("fresh", station.series)
+    old = _read(path)
+    have = set() if old is None else set(old["run_day"])
+    end = datetime.now(UTC).date()
+    todo = [start + timedelta(days=i) for i in range((end - start).days + 1)]
+    todo = [d for d in todo if d not in have]
+    rows: list[dict] = []
+    session = __import__("requests").Session()
+
+    def save() -> pd.DataFrame:
+        df = pd.DataFrame(rows) if old is None else pd.concat([old, pd.DataFrame(rows)])
+        if not df.empty:
+            df.to_parquet(path, index=False)
+        return df
+
+    for i, run_day in enumerate(todo, 1):
+        try:
+            highs = openmeteo.fetch_decision_day_run(station, run_day, session=session)
+        except Exception as exc:  # missing runs are retried on the next invocation
+            log.warning("fresh run %s %s: %s", station.series, run_day, exc)
+            continue
+        for lead, tmax in highs.items():
+            rows.append({"run_day": run_day, "date": run_day + timedelta(days=lead - 1),
+                         "lead": lead, "model": "ecmwf_fresh", "tmax_f": tmax})
+        time.sleep(0.25)  # stay well inside Open-Meteo's free-tier limits
+        if i % 100 == 0:
+            log.info("fresh %s: %d/%d", station.series, i, len(todo))
+            save()
+    df = save()
+    log.info("fresh %s: %d rows", station.series, len(df))
     return df
 
 

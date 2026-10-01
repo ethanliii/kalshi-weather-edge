@@ -23,13 +23,24 @@ from weather_edge.weather.openmeteo import MULTI_MODELS
 
 log = logging.getLogger(__name__)
 MEMBERS = list(MULTI_MODELS)
+FRESH_MEMBER = "ecmwf_fresh"  # decision-day 00Z ECMWF HRES run (ablation only)
 
 
-def forecast_table(series: str, lead: int) -> pd.DataFrame:
+def forecast_table(series: str, lead: int, fresh: bool = False) -> pd.DataFrame:
+    """Forecasts (one column per model) and observed CLI high for one station and lead.
+
+    With `fresh=True` the decision-day ECMWF run is added as an extra member and
+    only dates that have it are kept, so ablation comparisons use identical rows.
+    """
     st = STATIONS[series]
     fc = pd.read_parquet(RAW_DIR / "forecasts" / f"{series}.parquet")
+    if fresh:
+        fr = pd.read_parquet(RAW_DIR / "fresh" / f"{series}.parquet")
+        fc = pd.concat([fc, fr[["date", "lead", "model", "tmax_f"]]], ignore_index=True)
     fc = fc[fc["lead"] == lead]
     wide = fc.pivot_table(index="date", columns="model", values="tmax_f").reset_index()
+    if fresh:
+        wide = wide.dropna(subset=[FRESH_MEMBER])
     cli = pd.read_parquet(RAW_DIR / "cli" / f"{st.icao}.parquet")
     df = wide.merge(cli[["date", "cli_high_f"]], on="date", how="left")
     df = df.rename(columns={"cli_high_f": "obs"})
@@ -37,11 +48,18 @@ def forecast_table(series: str, lead: int) -> pd.DataFrame:
     return df
 
 
-def emos_predictions(lead: int, series: list[str] | None = None) -> pd.DataFrame:
+def emos_predictions(
+    lead: int,
+    series: list[str] | None = None,
+    fresh_table: bool = False,
+    members: list[str] | None = None,
+) -> pd.DataFrame:
+    """Walk-forward EMOS for each station. `fresh_table` restricts rows to dates with the
+    decision-day run; `members` picks the predictors (default: the five fixed-lead models)."""
     frames = []
     for s in series or sorted(STATIONS):
-        df = forecast_table(s, lead)
-        preds = walk_forward(df, MEMBERS)
+        df = forecast_table(s, lead, fresh=fresh_table)
+        preds = walk_forward(df, members or MEMBERS)
         frames.append(preds)
         log.info("EMOS %s lead %d: %d out-of-sample days", s, lead, len(preds))
     out = pd.concat(frames, ignore_index=True)
