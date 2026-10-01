@@ -53,6 +53,18 @@ def cmd_collect(args: argparse.Namespace) -> None:
         collect.collect_ensemble_snapshot(stations)
 
 
+def cmd_evaluate(args: argparse.Namespace) -> None:
+    """Walk-forward EMOS, model-vs-market scores, backtest; writes reports/."""
+    from weather_edge.evaluation import report
+
+    results = report.run(tuple(args.leads))
+    for lead, r in results["leads"].items():
+        vm = r["vs_market"]
+        ll = vm["log_loss"]
+        print(f"lead {lead}: {vm['n_events']} events | log loss EMOS {ll['p_emos']['mean']:.3f} "
+              f"market {ll['p_market']['mean']:.3f} | diff {ll['emos_minus_market']}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="weather-edge")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -66,6 +78,10 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("what", nargs="+", choices=["weather", "markets", "quotes", "ensemble"])
     c.add_argument("--series", nargs="*", help="series tickers (default: all)")
     c.set_defaults(func=cmd_collect)
+
+    e = sub.add_parser("evaluate", help="fit models out of sample and write reports/")
+    e.add_argument("--leads", nargs="*", type=int, default=[1, 2])
+    e.set_defaults(func=cmd_evaluate)
     return p
 
 

@@ -95,7 +95,8 @@ def settlement_source(rules_primary: str) -> str:
     text = rules_primary or ""
     if "Weather Company" in text:
         return "TWC"
-    if "National Weather Service" in text or "Climatological Report" in text:
+    if any(k in text for k in ("National Weather Service", "NWS", "Climatological Report",
+                               "Daily Climate Report")):
         return "NWS_CLI"
     return "UNKNOWN"
 
