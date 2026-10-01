@@ -100,6 +100,8 @@ def score_intervals(scores: pd.DataFrame, path: Path) -> None:
         ax.set_yticks(yticks, ylabels)
         ax.invert_yaxis()
         ax.set_title(titles[metric], fontsize=10)
+    fig.suptitle("Mean per-event score with 95% CI (bootstrap over dates)", color=INK,
+                 fontsize=10)
     fig.tight_layout()
     fig.savefig(path, dpi=150, facecolor=SURFACE)
     plt.close(fig)
@@ -116,7 +118,9 @@ def cumulative_pnl(trades: dict[int, pd.DataFrame], path: Path) -> None:
         cum = daily.cumsum()
         ax.plot(pd.to_datetime(cum.index), cum.values, color=lead_colors[lead], linewidth=2,
                 label=f"Lead {lead} ({len(t)} trades)")
-        ax.annotate(f"${cum.iloc[-1]:,.0f}", (pd.to_datetime(cum.index[-1]), cum.iloc[-1]),
+        final = cum.iloc[-1]
+        label = f"{'−' if final < 0 else ''}${abs(final):,.0f}"
+        ax.annotate(label, (pd.to_datetime(cum.index[-1]), final),
                     textcoords="offset points", xytext=(4, 0), fontsize=8, color=INK2,
                     va="center")
     ax.axhline(0, color=INK2, linewidth=0.8)

@@ -19,6 +19,7 @@ from weather_edge.config import FIGURES_DIR, REPORTS_DIR
 from weather_edge.evaluation import plots
 from weather_edge.evaluation.backtest import BacktestConfig, simulate, summarise
 from weather_edge.evaluation.metrics import Estimate, cluster_bootstrap, event_scores
+from weather_edge.evaluation.render import render
 from weather_edge.model.emos import crps_normal
 
 log = logging.getLogger(__name__)
@@ -75,7 +76,9 @@ def market_comparison(br: pd.DataFrame) -> tuple[dict, list[dict]]:
     per_city = {}
     se = scores["p_emos"].merge(scores["p_market"], on=["event_ticker", "date"],
                                 suffixes=("_m", "_k"))
-    se["series"] = se["event_ticker"].str.split("-").str[0]
+    # Group by series column: legacy events (HIGHNY-...) belong to the same series as KX ones.
+    se["series"] = se["event_ticker"].map(br.drop_duplicates("event_ticker")
+                                          .set_index("event_ticker")["series"])
     for s, g in se.groupby("series"):
         d = (g["log_loss_m"] - g["log_loss_k"]).to_numpy()
         per_city[s] = {"n": int(len(g)), **_est(cluster_bootstrap(d, g["date"].to_numpy()))}
@@ -152,6 +155,21 @@ def settlement_check() -> dict:
     return out
 
 
+def write_samples(brackets: pd.DataFrame, n_events: int = 5) -> None:
+    """Small tracked samples of the modelling tables (data/ is otherwise gitignored)."""
+    from weather_edge.config import SAMPLE_DIR
+
+    SAMPLE_DIR.mkdir(parents=True, exist_ok=True)
+    ny = brackets[brackets["series"] == "KXHIGHNY"]
+    events = ny["event_ticker"].drop_duplicates().tail(n_events)
+    cols = ["event_ticker", "date", "ticker", "lo", "hi", "decision_time", "yes_bid", "yes_ask",
+            "mu", "sigma", "obs", "p_emos", "p_raw", "p_market", "result"]
+    ny[ny["event_ticker"].isin(events)][cols].round(4).to_csv(
+        SAMPLE_DIR / "brackets_lead1_nyc.csv", index=False)
+    fc = dataset.forecast_table("KXHIGHNY", 1).dropna().tail(30)
+    fc.round(2).to_csv(SAMPLE_DIR / "forecasts_lead1_nyc.csv", index=False)
+
+
 def run(leads: tuple[int, ...] = LEADS) -> dict:
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     results: dict = {"generated_utc": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -169,6 +187,8 @@ def run(leads: tuple[int, ...] = LEADS) -> dict:
         comp["dropped_events"] = br.attrs.get("dropped", {})
         score_rows += [{**r, "lead": lead} for r in rows]
         cal_frames[lead] = br
+        if lead == 1:
+            write_samples(br)
 
         backtests = {}
         for margin in MARGINS:
@@ -179,7 +199,7 @@ def run(leads: tuple[int, ...] = LEADS) -> dict:
             if margin == BacktestConfig.margin:
                 trades_by_lead[lead] = trades
                 if not trades.empty:
-                    trades.to_csv(REPORTS_DIR / f"trades_lead{lead}.csv", index=False)
+                    trades.to_csv(REPORTS_DIR / f"trades_lead{lead}.csv.gz", index=False)
         results["leads"][str(lead)] = {"forecast_skill": skill, "vs_market": comp,
                                        "backtest": backtests,
                                        "fresh_run_ablation": fresh_run_ablation(lead)}
@@ -188,4 +208,5 @@ def run(leads: tuple[int, ...] = LEADS) -> dict:
     plots.score_intervals(pd.DataFrame(score_rows), FIGURES_DIR / "scores.png")
     plots.cumulative_pnl(trades_by_lead, FIGURES_DIR / "pnl.png")
     (REPORTS_DIR / "results.json").write_text(json.dumps(results, indent=2, default=str))
+    (REPORTS_DIR / "RESULTS.md").write_text(render(json.loads(json.dumps(results, default=str))))
     return results
