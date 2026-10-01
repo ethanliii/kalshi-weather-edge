@@ -6,6 +6,7 @@ import argparse
 import logging
 from collections import defaultdict
 
+from weather_edge import collect
 from weather_edge.kalshi.client import KalshiClient
 from weather_edge.kalshi.markets import sorted_brackets, validate_partition
 from weather_edge.stations import STATIONS
@@ -35,6 +36,23 @@ def cmd_markets(args: argparse.Namespace) -> None:
             print(f"{ev:<22} {ok:<4} {quotes}")
 
 
+def cmd_collect(args: argparse.Namespace) -> None:
+    """Fetch and cache raw data. Incremental: safe to re-run."""
+    stations = collect.stations_for(args.series)
+    what = set(args.what)
+    client = KalshiClient()
+    for st in stations:
+        if "weather" in what:
+            collect.collect_cli(st)
+            collect.collect_forecasts(st)
+        if "markets" in what:
+            collect.collect_markets(client, st)
+        if "quotes" in what:
+            collect.collect_quotes(client, st)
+    if "ensemble" in what:
+        collect.collect_ensemble_snapshot(stations)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="weather-edge")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -43,6 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
     m = sub.add_parser("markets", help="show open temperature events and quotes")
     m.add_argument("--series", nargs="*", help="series tickers (default: all)")
     m.set_defaults(func=cmd_markets)
+
+    c = sub.add_parser("collect", help="fetch and cache raw data")
+    c.add_argument("what", nargs="+", choices=["weather", "markets", "quotes", "ensemble"])
+    c.add_argument("--series", nargs="*", help="series tickers (default: all)")
+    c.set_defaults(func=cmd_collect)
     return p
 
 
