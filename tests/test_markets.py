@@ -68,6 +68,11 @@ def test_settlement_source_classification():
     assert settlement_source("... according to The Weather Company, then ...") == "TWC"
     assert settlement_source("as reported by the National Weather Service's Climatological "
                              "Report (Daily), is greater than") == "NWS_CLI"
+    # 2024-era wording
+    assert settlement_source("highest temperature recorded at Chicago Midway, IL for March 01, "
+                             "2024, is greater than 55° according to the NWS's Daily Climate "
+                             "Report") == "NWS_CLI"
+    assert settlement_source("something else") == "UNKNOWN"
 
 
 def test_bracket_label():
