@@ -1,11 +1,15 @@
-"""Authenticated client for Kalshi's DEMO exchange — and only the demo exchange.
+"""Authenticated Kalshi clients, each pinned to one environment.
 
-Safety: the host is pinned. The constructor refuses any base URL whose host is
-not one of Kalshi's documented demo API hosts, every request re-checks the URL,
-and redirects are disabled, so a production endpoint cannot be reached through
-configuration mistakes or redirects.
-Credentials come from .env (KALSHI_DEMO_API_KEY_ID, KALSHI_DEMO_PRIVATE_KEY_PATH)
-and must be demo keys; production keys do not work on demo and vice versa.
+* DemoClient: Kalshi's DEMO exchange only. Reads and writes (paper trading).
+  Credentials: KALSHI_DEMO_API_KEY_ID, KALSHI_DEMO_PRIVATE_KEY_PATH.
+* ProductionReadOnlyClient: the real exchange, GET requests only. Used by
+  shadow mode, which logs the orders it *would* send. Any POST/DELETE raises
+  before a request is built, so this client cannot place or cancel orders.
+  Credentials: KALSHI_PROD_API_KEY_ID, KALSHI_PROD_PRIVATE_KEY_PATH.
+
+Safety: each client's host is pinned. The constructor refuses any base URL
+outside that environment's documented hosts (https only), every request
+re-checks the URL, and redirects are disabled.
 """
 
 from __future__ import annotations
@@ -26,64 +30,92 @@ log = logging.getLogger(__name__)
 DEMO_BASE_URL = "https://external-api.demo.kalshi.co/trade-api/v2"
 # Documented demo REST hosts (docs.kalshi.com/getting_started/demo_env).
 DEMO_HOSTS = frozenset({"external-api.demo.kalshi.co", "demo-api.kalshi.co"})
+PROD_BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
+# Production REST hosts listed in the Trade API OpenAPI `servers` block.
+PROD_HOSTS = frozenset({"external-api.kalshi.com", "api.elections.kalshi.com"})
 
 
-class NotDemoError(RuntimeError):
-    """Raised whenever anything tries to talk to a non-demo host."""
+class WrongHostError(RuntimeError):
+    """Raised whenever a client is pointed at a host outside its environment."""
 
 
-def assert_demo(url: str) -> None:
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname not in DEMO_HOSTS:
-        host = parsed.hostname
-        raise NotDemoError(f"refusing non-demo host {host!r}; paper trading is demo-only")
+NotDemoError = WrongHostError  # backwards-compatible name
+
+
+class ReadOnlyError(RuntimeError):
+    """Raised when a read-only client is asked to send anything but GET."""
 
 
 class MissingCredentials(RuntimeError):
     pass
 
 
-class DemoClient:
+def _assert_host(url: str, hosts: frozenset[str], env_name: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname not in hosts:
+        raise WrongHostError(f"refusing host {parsed.hostname!r}: this client is {env_name}-only")
+
+
+def assert_demo(url: str) -> None:
+    _assert_host(url, DEMO_HOSTS, "demo")
+
+
+class _SignedClient:
+    hosts: frozenset[str] = frozenset()
+    env_name = ""
+    env_prefix = ""
+    default_base_url = ""
+    key_help = ""
+    read_only = False
+
     def __init__(
         self,
         key_id: str | None = None,
         private_key_path: str | None = None,
-        base_url: str = DEMO_BASE_URL,
+        base_url: str | None = None,
         session: requests.Session | None = None,
         private_key=None,
     ):
-        assert_demo(base_url)
+        base_url = base_url or self.default_base_url
+        self._check_host(base_url)
         self.base_url = base_url.rstrip("/")
-        self.key_id = key_id or env("KALSHI_DEMO_API_KEY_ID")
-        key_path = private_key_path or env("KALSHI_DEMO_PRIVATE_KEY_PATH")
+        self.key_id = key_id or env(f"{self.env_prefix}_API_KEY_ID")
+        key_path = private_key_path or env(f"{self.env_prefix}_PRIVATE_KEY_PATH")
         if not self.key_id or not (key_path or private_key):
             raise MissingCredentials(
-                "Set KALSHI_DEMO_API_KEY_ID and KALSHI_DEMO_PRIVATE_KEY_PATH in .env "
-                "(create a key at https://demo.kalshi.co -> Account & security -> API Keys)."
+                f"Set {self.env_prefix}_API_KEY_ID and {self.env_prefix}_PRIVATE_KEY_PATH in "
+                f".env ({self.key_help})."
             )
         self.private_key = private_key or load_private_key(key_path)
         self.session = session or requests.Session()
         self.session.max_redirects = 0
 
+    def _check_host(self, url: str) -> None:
+        _assert_host(url, self.hosts, self.env_name)
+
     # ------------------------------------------------------------------ transport
     def request(self, method: str, path: str, params: dict | None = None,
                 json: dict | None = None, retries: int = 4) -> dict:
+        method = method.upper()
+        if self.read_only and method != "GET":
+            raise ReadOnlyError(f"{self.env_name} client is read-only; refused {method} {path}")
         url = f"{self.base_url}{path}"
-        assert_demo(url)
+        self._check_host(url)
         for attempt in range(retries):
             headers = auth_headers(self.key_id, self.private_key, method, url)
             if json is not None:
                 headers["Content-Type"] = "application/json"
             resp = self.session.request(method, url, params=params, json=json, headers=headers,
                                         timeout=30, allow_redirects=False)
-            assert_demo(resp.url or url)
+            self._check_host(resp.url or url)
             if resp.status_code == 429:
                 time.sleep(0.5 * 2**attempt)
                 continue
             if resp.status_code >= 400:
-                raise RuntimeError(f"demo {method} {path} -> {resp.status_code}: {resp.text[:300]}")
+                raise RuntimeError(f"{self.env_name} {method} {path} -> {resp.status_code}: "
+                                   f"{resp.text[:300]}")
             return resp.json() if resp.content else {}
-        raise RuntimeError(f"demo {method} {path}: rate limited")
+        raise RuntimeError(f"{self.env_name} {method} {path}: rate limited")
 
     # ------------------------------------------------------------------ reads
     def balance(self) -> float:
@@ -128,28 +160,59 @@ class DemoClient:
     def place_limit_order(self, ticker: str, side: str, price: float, count: int,
                           time_in_force: str = "immediate_or_cancel",
                           client_order_id: str | None = None) -> dict:
-        """Limit order via Create Order (V2). `side` is the contract we buy: 'yes' or 'no'.
-
-        The V2 book is quoted from the YES side: buying YES at p is a `bid` at p;
-        buying NO at q is an `ask` (sell YES) at 1 - q.
-        """
-        if side not in ("yes", "no"):
-            raise ValueError(side)
-        if not 0 < price < 1 or count <= 0:
-            raise ValueError(f"bad order price={price} count={count}")
-        yes_price = price if side == "yes" else 1 - price
-        body = {
-            "ticker": ticker,
-            "side": "bid" if side == "yes" else "ask",
-            "count": f"{int(count)}.00",
-            "price": f"{yes_price:.4f}",
-            "time_in_force": time_in_force,
-            "self_trade_prevention_type": "taker_at_cross",
-            "client_order_id": client_order_id or str(uuid.uuid4()),
-        }
+        body = order_body(ticker, side, price, count, time_in_force, client_order_id)
         return {"request": body, "response": self.request("POST", "/portfolio/events/orders",
                                                           json=body)}
 
     def cancel_order(self, order_id: str, ticker: str | None = None) -> dict:
         params = {"market_ticker": ticker} if ticker else None
         return self.request("DELETE", f"/portfolio/events/orders/{order_id}", params=params)
+
+
+def order_body(ticker: str, side: str, price: float, count: int,
+               time_in_force: str = "immediate_or_cancel",
+               client_order_id: str | None = None) -> dict:
+    """Create Order (V2) body. `side` is the contract we buy: 'yes' or 'no'.
+
+    The V2 book is quoted from the YES side: buying YES at p is a `bid` at p;
+    buying NO at q is an `ask` (sell YES) at 1 - q.
+    """
+    if side not in ("yes", "no"):
+        raise ValueError(side)
+    if not 0 < price < 1 or count <= 0:
+        raise ValueError(f"bad order price={price} count={count}")
+    yes_price = price if side == "yes" else 1 - price
+    return {
+        "ticker": ticker,
+        "side": "bid" if side == "yes" else "ask",
+        "count": f"{int(count)}.00",
+        "price": f"{yes_price:.4f}",
+        "time_in_force": time_in_force,
+        "self_trade_prevention_type": "taker_at_cross",
+        "client_order_id": client_order_id or str(uuid.uuid4()),
+    }
+
+
+class DemoClient(_SignedClient):
+    hosts = DEMO_HOSTS
+    env_name = "demo"
+    env_prefix = "KALSHI_DEMO"
+    default_base_url = DEMO_BASE_URL
+    key_help = "create a key at https://demo.kalshi.co -> Account & security -> API Keys"
+
+
+class ProductionReadOnlyClient(_SignedClient):
+    """Real-exchange client that can only read. Orders and cancels are impossible."""
+
+    hosts = PROD_HOSTS
+    env_name = "production"
+    env_prefix = "KALSHI_PROD"
+    default_base_url = PROD_BASE_URL
+    key_help = "create a key at https://kalshi.com -> Account & security -> API Keys"
+    read_only = True
+
+    def place_limit_order(self, *args, **kwargs) -> dict:
+        raise ReadOnlyError("production client is read-only (shadow mode); no orders are sent")
+
+    def cancel_order(self, *args, **kwargs) -> dict:
+        raise ReadOnlyError("production client is read-only (shadow mode); nothing is cancelled")

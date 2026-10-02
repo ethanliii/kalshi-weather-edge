@@ -227,6 +227,31 @@ Without keys the command exits with this message. Kalshi notes that demo prices 
 don't reflect production, so this tests the plumbing and risk controls, not alpha. No demo
 trades have been run for this README.
 
+## Shadow mode on the real exchange
+
+`weather-edge shadow` runs the same trader against **production**: real Kalshi prices, real
+order books and your real balance and positions. Every order it *would* place is written to
+`logs/shadow/ledger.jsonl` with the exact request body, and **nothing is sent**.
+
+* **No write path exists.** `ProductionReadOnlyClient` rejects any request other than `GET`
+  before building it, and it has no order or cancel implementation. Tests make sure no request
+  is even attempted.
+* **Same caps as paper trading.** Would-be orders from earlier runs count against the per-market,
+  per-event and total caps, so a 15-minute loop doesn't log the same trade twice.
+* **Never touches your account.** It doesn't cancel your own resting orders, even when the kill
+  switch trips.
+* **Scoring.** `weather-edge shadow-report` scores every would-be order against the actual
+  settlement, net of fees: hit rate, P&L, ROI, and expected vs realised edge per contract.
+
+```bash
+# .env: KALSHI_PROD_API_KEY_ID, KALSHI_PROD_PRIVATE_KEY_PATH (a key from kalshi.com)
+weather-edge shadow --bankroll 200 --loop     # run ~15:00-20:00 UTC; --bankroll sizes as if funded
+weather-edge shadow-report --csv shadow.csv
+```
+
+Real-money order sending is deliberately not implemented. Given the backtest above, the
+shadow record should first show a positive realised edge over a meaningful sample.
+
 ## Automation
 
 [`.github/workflows/daily.yml`](.github/workflows/daily.yml) runs at 15:20, 16:20, 17:20 and

@@ -135,6 +135,15 @@ class KalshiClient:
             seen.setdefault(m["ticker"], m)
         return list(seen.values())
 
+    def get_market(self, ticker: str) -> dict:
+        """One market, falling back to the historical tier for old settled markets."""
+        try:
+            return self.get(f"/markets/{ticker}")["market"]
+        except KalshiAPIError as exc:
+            if exc.status != 404:
+                raise
+            return self.get(f"/historical/markets/{ticker}")["market"]
+
     def open_markets(self, series_ticker: str) -> list[dict]:
         return self.list_markets(series_ticker, status="open")
 
