@@ -1,4 +1,10 @@
-"""Paper-trading loop on the Kalshi DEMO exchange.
+"""Paper-trading loop: the Kalshi DEMO exchange, or shadow mode on production.
+
+Shadow mode (shadow=True, with ProductionReadOnlyClient) runs the identical
+pipeline against real production prices and the real account balance, but
+every order is written to the ledger as `shadow_order` instead of being sent,
+and nothing on the real account is ever cancelled. `shadow_report` later scores
+those orders against actual settlements.
 
 One `run_once()` call:
   1. stops (and cancels resting orders) if the kill switch is tripped;
@@ -18,12 +24,12 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from weather_edge.kalshi.markets import event_date
 from weather_edge.live import FairValueService, lead_for
 from weather_edge.stations import STATIONS
-from weather_edge.trading.demo_client import DemoClient
+from weather_edge.trading.demo_client import DemoClient, order_body
 from weather_edge.trading.fees import order_fee
 from weather_edge.trading.risk import KillSwitch, Ledger
 from weather_edge.trading.sizing import SizingConfig, best_opportunity, size_order
@@ -53,6 +59,8 @@ class PaperTrader:
         fair_values: FairValueService | None = None,
         series: list[str] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        shadow: bool = False,
+        bankroll_override: float | None = None,
     ):
         self.client = client
         self.ledger = ledger
@@ -61,6 +69,8 @@ class PaperTrader:
         self.fv = fair_values or FairValueService()
         self.series = series or sorted(STATIONS)
         self.now = now
+        self.shadow = shadow
+        self.bankroll_override = bankroll_override
 
     # ----------------------------------------------------------------- helpers
     def _call(self, fn, *args, **kwargs):
@@ -74,6 +84,8 @@ class PaperTrader:
         return out
 
     def cancel_all(self) -> None:
+        if self.shadow:  # never touch orders on the real account
+            return
         for o in self._call(self.client.resting_orders):
             r = self._call(self.client.cancel_order, o["order_id"], o.get("ticker"))
             self.ledger.log("cancel", order_id=o["order_id"], ticker=o.get("ticker"), response=r)
@@ -112,9 +124,16 @@ class PaperTrader:
             return []
 
         bankroll = self._call(self.client.balance)
+        if self.bankroll_override is not None:
+            bankroll = self.bankroll_override
         exposure = defaultdict(float)  # per ticker, dollars at cost
         for p in self._call(self.client.positions):
             exposure[p["ticker"]] += abs(float(p.get("market_exposure_dollars") or 0))
+        if self.shadow:  # earlier would-be orders count against the caps until they settle
+            recent = (self.now() - timedelta(days=1)).date()
+            for r in self.ledger.records("shadow_order"):
+                if event_date(_event_of(r["ticker"])) >= recent:
+                    exposure[r["ticker"]] += r["cost"]
         event_exp = defaultdict(float)
         for t, v in exposure.items():
             event_exp[_event_of(t)] += v
@@ -154,10 +173,17 @@ class PaperTrader:
                     self.ledger.log("decision", ticker=bracket.ticker, side=opp.side,
                                     price=opp.price, prob=opp.prob, edge=opp.edge, count=n,
                                     yes_bid=bid, yes_ask=ask)
-                    result = self._call(self.client.place_limit_order, bracket.ticker,
-                                        opp.side, opp.price, n)
-                    self.ledger.log("order", ticker=bracket.ticker, **result)
                     spent = n * opp.price + order_fee(opp.price, n)
+                    if self.shadow:
+                        body = order_body(bracket.ticker, opp.side, opp.price, n)
+                        result = {"request": body, "response": None, "shadow": True}
+                        self.ledger.log("shadow_order", ticker=bracket.ticker, side=opp.side,
+                                        price=opp.price, count=n, prob=opp.prob, edge=opp.edge,
+                                        fee=order_fee(opp.price, n), cost=spent, request=body)
+                    else:
+                        result = self._call(self.client.place_limit_order, bracket.ticker,
+                                            opp.side, opp.price, n)
+                        self.ledger.log("order", ticker=bracket.ticker, **result)
                     exposure[bracket.ticker] += spent
                     event_exp[ev] += spent
                     total += spent

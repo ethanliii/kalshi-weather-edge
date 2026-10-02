@@ -83,32 +83,38 @@ def cmd_daily(args: argparse.Namespace) -> None:
     daily.run()
 
 
-def cmd_paper(args: argparse.Namespace) -> None:
-    """Paper trade on the Kalshi DEMO exchange (never production)."""
+def _run_trader(args: argparse.Namespace, shadow: bool) -> None:
     import time
 
     from weather_edge.config import LOG_DIR
     from weather_edge.kalshi.auth import KeyFileError
-    from weather_edge.trading.demo_client import DemoClient, MissingCredentials
+    from weather_edge.trading.demo_client import (
+        DemoClient,
+        MissingCredentials,
+        ProductionReadOnlyClient,
+    )
     from weather_edge.trading.paper import PaperTrader
     from weather_edge.trading.risk import KillSwitch, KillSwitchConfig, Ledger
     from weather_edge.trading.sizing import SizingConfig
 
-    state = LOG_DIR / "paper"
+    state = LOG_DIR / ("shadow" if shadow else "paper")
     ledger = Ledger(state / "ledger.jsonl")
     kill = KillSwitch(state, KillSwitchConfig(max_daily_loss=args.max_daily_loss), ledger)
     sizing = SizingConfig(kelly_fraction=args.kelly, min_edge=args.margin,
                           max_market_exposure=args.max_market,
                           max_event_exposure=args.max_event, max_total_exposure=args.max_total)
     try:
-        client = DemoClient()
+        client = ProductionReadOnlyClient() if shadow else DemoClient()
     except (MissingCredentials, KeyFileError) as exc:
-        raise SystemExit(f"paper trading needs valid demo API keys: {exc}") from None
-    trader = PaperTrader(client, ledger, kill, sizing, series=args.series)
+        which = "production" if shadow else "demo"
+        raise SystemExit(f"needs valid {which} API keys: {exc}") from None
+    trader = PaperTrader(client, ledger, kill, sizing, series=args.series, shadow=shadow,
+                         bankroll_override=getattr(args, "bankroll", None))
+    verb = "would-be orders logged (nothing sent)" if shadow else "orders sent"
     while True:
         try:
             orders = trader.run_once()
-            print(f"{len(orders)} orders sent; ledger: {ledger.path}")
+            print(f"{len(orders)} {verb}; ledger: {ledger.path}")
         except Exception as exc:  # already counted by the kill switch and logged to the ledger
             logging.getLogger(__name__).error("run failed: %s", exc)
             if not args.loop:
@@ -116,6 +122,28 @@ def cmd_paper(args: argparse.Namespace) -> None:
         if not args.loop or kill.tripped:
             break
         time.sleep(args.interval)
+
+
+def cmd_paper(args: argparse.Namespace) -> None:
+    """Paper trade on the Kalshi DEMO exchange (never production)."""
+    _run_trader(args, shadow=False)
+
+
+def cmd_shadow(args: argparse.Namespace) -> None:
+    """Shadow mode on PRODUCTION: real prices and balance, orders logged but never sent."""
+    _run_trader(args, shadow=True)
+
+
+def cmd_shadow_report(args: argparse.Namespace) -> None:
+    from weather_edge.config import LOG_DIR
+    from weather_edge.trading import shadow_report
+    from weather_edge.trading.risk import Ledger
+
+    df = shadow_report.score(Ledger(LOG_DIR / "shadow" / "ledger.jsonl"))
+    print(shadow_report.summary(df))
+    if args.csv and not df.empty:
+        df.to_csv(args.csv, index=False)
+        print(f"details: {args.csv}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -143,17 +171,31 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser("daily", help="forward-test snapshot (read-only; used by CI)")
     d.set_defaults(func=cmd_daily)
 
+    def trader_args(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--series", nargs="*", help="series tickers (default: all)")
+        sp.add_argument("--margin", type=float, default=0.03, help="edge required after fees ($)")
+        sp.add_argument("--kelly", type=float, default=0.25, help="fraction of full Kelly")
+        sp.add_argument("--max-market", type=float, default=25.0, help="$ at risk per market")
+        sp.add_argument("--max-event", type=float, default=50.0, help="$ at risk per event")
+        sp.add_argument("--max-total", type=float, default=250.0, help="$ at risk in total")
+        sp.add_argument("--max-daily-loss", type=float, default=100.0,
+                        help="kill-switch loss limit")
+        sp.add_argument("--loop", action="store_true", help="keep running every --interval s")
+        sp.add_argument("--interval", type=int, default=900)
+
     pt = sub.add_parser("paper", help="paper trade on the Kalshi DEMO exchange")
-    pt.add_argument("--series", nargs="*", help="series tickers (default: all)")
-    pt.add_argument("--margin", type=float, default=0.03, help="edge required after fees ($)")
-    pt.add_argument("--kelly", type=float, default=0.25, help="fraction of full Kelly")
-    pt.add_argument("--max-market", type=float, default=25.0, help="$ at risk per market")
-    pt.add_argument("--max-event", type=float, default=50.0, help="$ at risk per event")
-    pt.add_argument("--max-total", type=float, default=250.0, help="$ at risk in total")
-    pt.add_argument("--max-daily-loss", type=float, default=100.0, help="kill-switch loss limit")
-    pt.add_argument("--loop", action="store_true", help="keep running every --interval s")
-    pt.add_argument("--interval", type=int, default=900)
+    trader_args(pt)
     pt.set_defaults(func=cmd_paper)
+
+    sh = sub.add_parser("shadow", help="PRODUCTION shadow mode: real prices, orders logged only")
+    trader_args(sh)
+    sh.add_argument("--bankroll", type=float, default=None,
+                    help="size as if the account held this many $ (default: real balance)")
+    sh.set_defaults(func=cmd_shadow)
+
+    sr = sub.add_parser("shadow-report", help="score shadow orders against settlements")
+    sr.add_argument("--csv", help="also write per-order details to this CSV")
+    sr.set_defaults(func=cmd_shadow_report)
     return p
 
 
