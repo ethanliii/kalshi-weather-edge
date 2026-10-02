@@ -19,9 +19,29 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
+class KeyFileError(ValueError):
+    """The private-key file is missing, empty or not a PEM private key."""
+
+
 def load_private_key(path: str | Path):
-    data = Path(path).expanduser().read_bytes()
-    key = serialization.load_pem_private_key(data, password=None)
+    p = Path(path).expanduser()
+    if not p.is_file():
+        raise KeyFileError(f"private key file not found: {p}")
+    data = p.read_bytes()
+    if not data.strip():
+        raise KeyFileError(
+            f"private key file is empty: {p}. Paste the full PEM Kalshi gave you when you "
+            "created the API key (including the -----BEGIN ... PRIVATE KEY----- lines).")
+    if b"-----BEGIN" not in data:
+        raise KeyFileError(
+            f"{p} does not look like a PEM private key (no -----BEGIN line). It should be "
+            "the downloaded key file, not the API key ID.")
+    try:
+        key = serialization.load_pem_private_key(data, password=None)
+    except ValueError as exc:
+        raise KeyFileError(
+            f"could not parse {p} as a PEM private key ({exc}). Re-save the file Kalshi "
+            "downloaded without editing it; line breaks must be preserved.") from exc
     if not isinstance(key, rsa.RSAPrivateKey | Ed25519PrivateKey):
         raise TypeError(f"unsupported key type {type(key).__name__}")
     return key

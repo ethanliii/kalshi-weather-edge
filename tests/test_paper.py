@@ -66,6 +66,22 @@ def test_demo_hosts_allowed():
     assert_demo("https://demo-api.kalshi.co/trade-api/v2")
 
 
+@pytest.mark.parametrize("content,msg", [
+    (b"", "empty"),
+    (b"a952bcbe-ec3b-4b5b-b8f9-11dae589608c\n", "no -----BEGIN"),
+    (b"-----BEGIN PRIVATE KEY-----MIIEv...one line-----END PRIVATE KEY-----", "could not parse"),
+])
+def test_bad_key_files_give_clear_errors(tmp_path, content, msg):
+    from weather_edge.kalshi.auth import KeyFileError, load_private_key
+
+    key = tmp_path / "demo.key"
+    key.write_bytes(content)
+    with pytest.raises(KeyFileError, match=msg):
+        load_private_key(key)
+    with pytest.raises(KeyFileError, match="not found"):
+        load_private_key(tmp_path / "missing.key")
+
+
 def test_missing_credentials(monkeypatch):
     monkeypatch.delenv("KALSHI_DEMO_API_KEY_ID", raising=False)
     monkeypatch.delenv("KALSHI_DEMO_PRIVATE_KEY_PATH", raising=False)
