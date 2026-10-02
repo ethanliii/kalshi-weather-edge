@@ -126,7 +126,7 @@ def cumulative_pnl(trades: dict[int, pd.DataFrame], path: Path) -> None:
     ax.axhline(0, color=INK2, linewidth=0.8)
     ax.set_ylabel("Cumulative P&L after fees ($)")
     ax.set_title("Backtest: 10-contract taker orders when model edge > fees + 3¢", fontsize=10)
-    ax.legend(frameon=False, fontsize=8, labelcolor=INK2, loc="upper left")
+    ax.legend(frameon=False, fontsize=8, labelcolor=INK2, loc="lower left")
     fig.tight_layout()
     fig.savefig(path, dpi=150, facecolor=SURFACE)
     plt.close(fig)
