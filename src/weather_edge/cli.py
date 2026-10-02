@@ -88,6 +88,7 @@ def cmd_paper(args: argparse.Namespace) -> None:
     import time
 
     from weather_edge.config import LOG_DIR
+    from weather_edge.kalshi.auth import KeyFileError
     from weather_edge.trading.demo_client import DemoClient, MissingCredentials
     from weather_edge.trading.paper import PaperTrader
     from weather_edge.trading.risk import KillSwitch, KillSwitchConfig, Ledger
@@ -101,8 +102,8 @@ def cmd_paper(args: argparse.Namespace) -> None:
                           max_event_exposure=args.max_event, max_total_exposure=args.max_total)
     try:
         client = DemoClient()
-    except MissingCredentials as exc:
-        raise SystemExit(f"paper trading needs demo API keys: {exc}") from None
+    except (MissingCredentials, KeyFileError) as exc:
+        raise SystemExit(f"paper trading needs valid demo API keys: {exc}") from None
     trader = PaperTrader(client, ledger, kill, sizing, series=args.series)
     while True:
         try:
